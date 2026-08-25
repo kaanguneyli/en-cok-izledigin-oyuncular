@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: letterboxd-actor-analysis
+    name: en-cok-izledigin-oyuncular
     runtime: docker
     plan: free
     region: frankfurt

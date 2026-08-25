@@ -1617,7 +1617,7 @@ UI_HTML = r"""<!doctype html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Oyuncu Analizi</title>
+  <title>En Çok İzlediğin Oyuncular</title>
   <style>
     :root {
       color-scheme: light;
@@ -1936,7 +1936,7 @@ UI_HTML = r"""<!doctype html>
   <header>
     <div class="header-inner">
       <div class="brand">
-        <h1>Oyuncu Analizi</h1>
+        <h1>En Çok İzlediğin Oyuncular</h1>
       </div>
       <button id="shutdown" class="quiet-dark __SHUTDOWN_CLASS__" type="button">Arayüzü kapat</button>
     </div>

@@ -1,4 +1,4 @@
-# Letterboxd Oyuncu Analizi
+# En Çok İzlediğin Oyuncular
 
 Herkese açık bir Letterboxd profilindeki izlenen filmleri ve günlük kayıtlarını okuyup en çok izlenen oyuncuları sıralar. Tekrar izlemeleri hesaba katar, film bazında filtreleme yapar ve sonucu Excel olarak dışa aktarır.
 

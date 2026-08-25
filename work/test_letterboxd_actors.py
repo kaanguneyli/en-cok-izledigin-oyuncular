@@ -279,8 +279,8 @@ class UICommandTests(unittest.TestCase):
     def test_ui_document_contains_controls_and_escapes_script_content(self):
         document = MODULE.ui_document("</script>").decode("utf-8")
 
-        self.assertIn("<title>Oyuncu Analizi</title>", document)
-        self.assertIn("<h1>Oyuncu Analizi</h1>", document)
+        self.assertIn("<title>En Çok İzlediğin Oyuncular</title>", document)
+        self.assertIn("<h1>En Çok İzlediğin Oyuncular</h1>", document)
         self.assertIn("Kullanıcı adı veya profil bağlantısı", document)
         self.assertNotIn("Letterboxd Oyuncu Analizi", document)
         self.assertNotIn("brand-mark", document)
