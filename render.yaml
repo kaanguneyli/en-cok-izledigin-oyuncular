@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: letterboxd-actor-analysis
+    runtime: docker
+    plan: free
+    region: frankfurt
+    repo: https://github.com/kaanguneyli/letterboxd-actor-analysis
+    branch: main
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /healthz
+    autoDeployTrigger: commit
+    numInstances: 1
+    maxShutdownDelaySeconds: 60
+    envVars:
+      - key: LETTERBOXD_HOSTED
+        value: "1"
+      - key: LETTERBOXD_XLSX_BACKEND
+        value: xlsxwriter

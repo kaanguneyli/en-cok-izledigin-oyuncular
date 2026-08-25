@@ -25,6 +25,10 @@ docker run --rm -p 8000:8000 letterboxd-actors
 
 Arayüz `http://localhost:8000` adresinde açılır.
 
+## Render'a deploy
+
+Repo kökündeki `render.yaml`, ücretsiz Frankfurt web servisini ve Docker build ayarlarını tanımlar. Render Dashboard'da **New > Blueprint** seçip bu repoyu bağlamak yeterlidir. `main` dalına gönderilen sonraki commitler otomatik deploy edilir.
+
 ## Ortam değişkenleri
 
 - `PORT`: Web sunucusunun portu. Varsayılan `8000`.
