@@ -279,7 +279,11 @@ class UICommandTests(unittest.TestCase):
     def test_ui_document_contains_controls_and_escapes_script_content(self):
         document = MODULE.ui_document("</script>").decode("utf-8")
 
-        self.assertIn("Letterboxd Oyuncu Analizi", document)
+        self.assertIn("<title>Oyuncu Analizi</title>", document)
+        self.assertIn("<h1>Oyuncu Analizi</h1>", document)
+        self.assertIn("Kullanıcı adı veya profil bağlantısı", document)
+        self.assertNotIn("Letterboxd Oyuncu Analizi", document)
+        self.assertNotIn("brand-mark", document)
         self.assertIn("Analiz et", document)
         self.assertIn("Oyuncu veya film ara", document)
         self.assertIn('data-sort="appearances"', document)

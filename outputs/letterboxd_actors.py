@@ -1617,7 +1617,7 @@ UI_HTML = r"""<!doctype html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Letterboxd Oyuncu Analizi</title>
+  <title>Oyuncu Analizi</title>
   <style>
     :root {
       color-scheme: light;
@@ -1658,12 +1658,7 @@ UI_HTML = r"""<!doctype html>
       justify-content: space-between;
       gap: 20px;
     }
-    .brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
-    .brand-mark { position: relative; width: 36px; height: 24px; flex: 0 0 36px; }
-    .brand-mark i { position: absolute; top: 3px; width: 18px; height: 18px; border-radius: 50%; mix-blend-mode: screen; }
-    .brand-mark i:nth-child(1) { left: 0; background: #ff8000; }
-    .brand-mark i:nth-child(2) { left: 9px; background: #00c030; }
-    .brand-mark i:nth-child(3) { left: 18px; background: #40bcf4; }
+    .brand { min-width: 0; }
     h1 { margin: 0; font-size: 19px; line-height: 1.2; font-weight: 720; letter-spacing: 0; }
     main { width: min(1240px, calc(100% - 48px)); margin: 0 auto; padding: 24px 0 40px; }
     .workspace-bar {
@@ -1915,7 +1910,6 @@ UI_HTML = r"""<!doctype html>
       .header-inner, main { width: calc(100% - 28px); }
       .header-inner { min-height: 62px; }
       h1 { font-size: 17px; }
-      .brand-mark { transform: scale(0.9); transform-origin: left center; }
       main { padding-top: 16px; }
       .workspace-bar { grid-template-columns: 1fr; align-items: stretch; gap: 13px; padding: 15px; }
       .options { min-height: 30px; }
@@ -1942,8 +1936,7 @@ UI_HTML = r"""<!doctype html>
   <header>
     <div class="header-inner">
       <div class="brand">
-        <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
-        <h1>Letterboxd Oyuncu Analizi</h1>
+        <h1>Oyuncu Analizi</h1>
       </div>
       <button id="shutdown" class="quiet-dark __SHUTDOWN_CLASS__" type="button">Arayüzü kapat</button>
     </div>
@@ -1952,7 +1945,7 @@ UI_HTML = r"""<!doctype html>
     <form id="form" class="workspace-bar">
       <div class="fields">
         <div>
-          <label for="account">Letterboxd hesabı</label>
+          <label for="account">Kullanıcı adı veya profil bağlantısı</label>
           <input id="account" name="account" type="text" autocomplete="off" placeholder="kullanıcı adı veya profil URL'si" required>
         </div>
       </div>
