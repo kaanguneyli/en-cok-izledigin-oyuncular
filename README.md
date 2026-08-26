@@ -10,6 +10,10 @@ Komut satırından çalıştırıldığında Excel dosyası üretir:
 python3 outputs/letterboxd_actors.py kullanici_adi
 ```
 
+Varsayılan olarak her filmde TMDB/Letterboxd cast sırasındaki ilk 20 oyuncu
+hesaba katılır. Komut satırında `--cast-limit 30` ile sınır değiştirilebilir;
+`--cast-limit 0` tüm cast listesini kullanır.
+
 Hesap argümanı verilmezse tarayıcı arayüzü açılır. Arayüz analiz sırasında Excel üretmez; yalnızca kullanıcı `Excel indir` düğmesine bastığında dosyayı hazırlar:
 
 ```bash
@@ -19,8 +23,8 @@ python3 outputs/letterboxd_actors.py
 ## Docker
 
 ```bash
-docker build -t letterboxd-actors .
-docker run --rm -p 8000:8000 letterboxd-actors
+docker build -t en-cok-izledigin-oyuncular .
+docker run --rm -p 8000:8000 en-cok-izledigin-oyuncular
 ```
 
 Arayüz `http://localhost:8000` adresinde açılır.

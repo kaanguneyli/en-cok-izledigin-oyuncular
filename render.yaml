@@ -4,7 +4,7 @@ services:
     runtime: docker
     plan: free
     region: frankfurt
-    repo: https://github.com/kaanguneyli/letterboxd-actor-analysis
+    repo: https://github.com/kaanguneyli/en-cok-izledigin-oyuncular
     branch: main
     dockerfilePath: ./Dockerfile
     dockerContext: .

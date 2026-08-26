@@ -668,6 +668,14 @@ def collect_casts(
     return casts, errors
 
 
+def limit_casts(
+    casts: dict[str, list[Actor]], cast_limit: int
+) -> dict[str, list[Actor]]:
+    if cast_limit == 0:
+        return casts
+    return {slug: actors[:cast_limit] for slug, actors in casts.items()}
+
+
 def rank_actors(
     collection: ModeCollection, casts: dict[str, list[Actor]]
 ) -> list[ActorTotal]:
@@ -1189,7 +1197,9 @@ def print_top(rankings: list[ActorTotal], count: int) -> None:
         )
 
 
-def build_ui_command(account: str, output_dir: Path, refresh: bool) -> list[str]:
+def build_ui_command(
+    account: str, output_dir: Path, refresh: bool, cast_limit: int = 20
+) -> list[str]:
     command = [
         sys.executable,
         "-u",
@@ -1199,6 +1209,8 @@ def build_ui_command(account: str, output_dir: Path, refresh: bool) -> list[str]
         str(output_dir.expanduser().resolve()),
         "--display",
         "0",
+        "--cast-limit",
+        str(cast_limit),
         "--ui-result",
     ]
     if refresh:
@@ -1688,7 +1700,11 @@ UI_HTML = r"""<!doctype html>
     }
     input[type="text"]:focus { border-color: var(--green); box-shadow: 0 0 0 3px rgba(0, 165, 106, 0.13); }
     input:disabled { background: #edf1ef; color: #718079; }
-    .options { min-height: 42px; display: flex; align-items: center; }
+    .options { min-height: 42px; display: flex; align-items: center; gap: 18px; }
+    .cast-limit { margin: 0; display: inline-flex; align-items: center; gap: 8px; color: #354148; white-space: nowrap; }
+    .cast-limit select { height: 38px; padding: 0 28px 0 10px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--white); color: var(--ink); font: inherit; font-size: 13px; font-weight: 650; outline: none; }
+    .cast-limit select:focus-visible { border-color: var(--green); outline: 3px solid rgba(0, 165, 106, 0.18); }
+    .cast-limit select:disabled { background: #edf1ef; color: #718079; }
     .check { display: inline-flex; align-items: center; gap: 9px; margin: 0; color: #354148; font-size: 13px; font-weight: 600; cursor: pointer; white-space: nowrap; }
     .check input { position: absolute; opacity: 0; pointer-events: none; }
     .switch {
@@ -1749,8 +1765,9 @@ UI_HTML = r"""<!doctype html>
     .running .bar { width: 38%; animation: progress 1.4s ease-in-out infinite; }
     @keyframes progress { 0% { transform: translateX(-110%); } 100% { transform: translateX(290%); } }
     .status {
-      min-width: 106px;
-      padding: 5px 9px;
+      width: clamp(190px, 22vw, 280px);
+      min-height: 32px;
+      padding: 7px 12px;
       border-radius: 4px;
       background: #e8eeeb;
       color: var(--muted);
@@ -1863,7 +1880,7 @@ UI_HTML = r"""<!doctype html>
     .activity-panel { margin-top: 18px; overflow: hidden; border: 1px solid var(--line); border-left: 3px solid var(--green); border-radius: 6px; background: var(--white); }
     .activity-heading { min-height: 40px; padding: 0 13px; display: flex; align-items: center; justify-content: space-between; gap: 16px; color: #354148; font-size: 12px; font-weight: 700; }
     .activity-meta { color: var(--muted); font-weight: 560; }
-    .log-tool { max-height: 150px; overflow: auto; border-top: 1px solid var(--line); background: #fafcfb; }
+    .log-tool { height: clamp(180px, 24vh, 260px); overflow: auto; border-top: 1px solid var(--line); background: #fafcfb; }
     dialog {
       width: min(620px, calc(100% - 32px));
       max-height: min(760px, calc(100vh - 48px));
@@ -1912,11 +1929,12 @@ UI_HTML = r"""<!doctype html>
       h1 { font-size: 17px; }
       main { padding-top: 16px; }
       .workspace-bar { grid-template-columns: 1fr; align-items: stretch; gap: 13px; padding: 15px; }
-      .options { min-height: 30px; }
+      .options { min-height: 30px; justify-content: space-between; flex-wrap: wrap; gap: 12px 18px; }
+      .cast-limit { flex: 1 1 auto; justify-content: space-between; }
       .actions { align-items: stretch; }
       .actions button { flex: 1 1 auto; }
       .status-row { grid-template-columns: 1fr; gap: 9px; }
-      .status { justify-self: start; }
+      .status { width: 100%; justify-self: stretch; }
       .metrics { grid-template-columns: repeat(2, 1fr); }
       .metric:nth-child(2) { border-right: 0; }
       .metric:nth-child(-n + 2) { border-bottom: 1px solid var(--line); }
@@ -1945,11 +1963,14 @@ UI_HTML = r"""<!doctype html>
     <form id="form" class="workspace-bar">
       <div class="fields">
         <div>
-          <label for="account">Kullanıcı adı veya profil bağlantısı</label>
+          <label for="account">Letterboxd hesabı</label>
           <input id="account" name="account" type="text" autocomplete="off" placeholder="kullanıcı adı veya profil URL'si" required>
         </div>
       </div>
       <div class="options">
+        <label class="cast-limit" for="castLimit">Film başına oyuncu
+          <select id="castLimit"><option value="10">10</option><option value="20" selected>20</option><option value="30">30</option><option value="50">50</option></select>
+        </label>
         <label class="check"><input id="refresh" type="checkbox"><span class="switch" aria-hidden="true"></span><span>Önbelleği yenile</span></label>
       </div>
       <div class="actions">
@@ -2024,6 +2045,7 @@ UI_HTML = r"""<!doctype html>
     const initialAccount = __INITIAL_ACCOUNT__;
     const form = document.querySelector("#form");
     const account = document.querySelector("#account");
+    const castLimit = document.querySelector("#castLimit");
     const refresh = document.querySelector("#refresh");
     const run = document.querySelector("#run");
     const cancel = document.querySelector("#cancel");
@@ -2397,6 +2419,7 @@ UI_HTML = r"""<!doctype html>
       const running = state.status === "running";
       const finished = state.status === "success" || state.status === "warning";
       account.disabled = running;
+      castLimit.disabled = running;
       refresh.disabled = running;
       run.disabled = running;
       cancel.disabled = !running;
@@ -2448,7 +2471,11 @@ UI_HTML = r"""<!doctype html>
       try {
         const state = await api("/api/run", {
           method: "POST",
-          body: JSON.stringify({account: account.value, refresh: refresh.checked}),
+          body: JSON.stringify({
+            account: account.value,
+            castLimit: Number(castLimit.value),
+            refresh: refresh.checked,
+          }),
         });
         currentJobId = state.jobId || "";
         if (currentJobId) sessionStorage.setItem("letterboxdJobId", currentJobId);
@@ -2587,14 +2614,19 @@ class UIJobManager:
             running = self.process is not None and self.process.poll() is None
             return running, self.last_touched
 
-    def start(self, account: str, refresh: bool) -> dict[str, object]:
+    def start(
+        self, account: str, refresh: bool, cast_limit: int = 20
+    ) -> dict[str, object]:
         username = normalize_username(account)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
         with self.lock:
             if self.process is not None and self.process.poll() is None:
                 raise ValueError("Bir analiz zaten çalışıyor.")
-            self.logs = [f"@{username} için analiz başlatıldı."]
+            self.logs = [
+                f"@{username} için analiz başlatıldı; "
+                f"film başına ilk {cast_limit} oyuncu kullanılacak."
+            ]
             self.state = "running"
             self.label = "Çalışıyor"
             self.result = None
@@ -2602,7 +2634,7 @@ class UIJobManager:
             self.last_touched = time.monotonic()
             try:
                 self.process = subprocess.Popen(
-                    build_ui_command(username, self.cache_dir, refresh),
+                    build_ui_command(username, self.cache_dir, refresh, cast_limit),
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     universal_newlines=True,
@@ -2737,8 +2769,12 @@ class UIJobRegistry:
             if self.active_job_id == job_id:
                 self.active_job_id = ""
 
-    def start(self, account: str, refresh: bool) -> dict[str, object]:
+    def start(
+        self, account: str, refresh: bool, cast_limit: int = 20
+    ) -> dict[str, object]:
         username = normalize_username(account)
+        if not 1 <= cast_limit <= 100:
+            raise ValueError("Film başına oyuncu sayısı 1 ile 100 arasında olmalı.")
         with self.lock:
             self._cleanup_locked()
             active = self.jobs.get(self.active_job_id)
@@ -2752,7 +2788,7 @@ class UIJobRegistry:
             self.active_job_id = job_id
             self._cleanup_locked()
         try:
-            return manager.start(username, refresh)
+            return manager.start(username, refresh, cast_limit)
         except Exception:
             with self.lock:
                 self.jobs.pop(job_id, None)
@@ -2878,9 +2914,11 @@ def launch_ui(
             try:
                 payload = self.read_json()
                 if route == "/api/run":
+                    cast_limit = int(payload.get("castLimit", 20))
                     state = registry.start(
                         str(payload.get("account", "")),
                         bool(payload.get("refresh", False)),
+                        cast_limit,
                     )
                     self.send_json(state, 202)
                 elif route == "/api/cancel":
@@ -2972,6 +3010,15 @@ def build_argument_parser() -> argparse.ArgumentParser:
         help="terminalde gösterilecek oyuncu sayısı (varsayılan: 20)",
     )
     parser.add_argument(
+        "--cast-limit",
+        type=int,
+        default=20,
+        help=(
+            "film başına sıralamaya alınacak ilk N oyuncu; "
+            "0 tüm cast (varsayılan: 20)"
+        ),
+    )
+    parser.add_argument(
         "--workers", type=int, default=4, help="eşzamanlı indirme sayısı (varsayılan: 4)"
     )
     parser.add_argument(
@@ -3006,7 +3053,13 @@ def run(args: argparse.Namespace) -> int:
     if not args.account:
         raise ValueError("Letterboxd kullanıcı adı veya profil URL'si gerekli.")
     username = normalize_username(args.account)
-    if args.top < 0 or args.display < 0 or args.workers < 1 or args.delay < 0:
+    if (
+        args.top < 0
+        or args.display < 0
+        or args.cast_limit < 0
+        or args.workers < 1
+        or args.delay < 0
+    ):
         raise ValueError("Sayısal seçenekler negatif olamaz; --workers en az 1 olmalı.")
 
     output_dir: Path = args.output_dir.expanduser().resolve()
@@ -3046,6 +3099,7 @@ def run(args: argparse.Namespace) -> int:
         )
     finally:
         cache.close()
+    casts = limit_casts(casts, args.cast_limit)
 
     films_collection = collections["films"]
     diary_collection = collections["diary"]
@@ -3064,6 +3118,7 @@ def run(args: argparse.Namespace) -> int:
     workbook_path = output_dir / f"{username}-actors.xlsx"
     payload: dict[str, object] = {
         "username": username,
+        "castLimit": args.cast_limit,
         "summary": {
             "totalViews": total_views,
             "uniqueFilms": unique_films,

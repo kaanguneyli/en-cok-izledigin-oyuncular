@@ -116,6 +116,20 @@ class ListingParserTests(unittest.TestCase):
 
 
 class CastAndRankingTests(unittest.TestCase):
+    def test_cast_limit_preserves_billing_order_and_supports_all(self):
+        cast = [
+            MODULE.Actor("lead", "Lead"),
+            MODULE.Actor("support", "Support"),
+            MODULE.Actor("cameo", "Cameo"),
+        ]
+        casts = {"film": cast}
+
+        self.assertEqual(
+            [actor.slug for actor in MODULE.limit_casts(casts, 2)["film"]],
+            ["lead", "support"],
+        )
+        self.assertIs(MODULE.limit_casts(casts, 0), casts)
+
     def test_cast_panel_wins_and_combined_ranking_counts_rewatches(self):
         parser = MODULE.CastParser()
         parser.feed(
@@ -268,6 +282,8 @@ class UICommandTests(unittest.TestCase):
         self.assertEqual(command[3], "kaan_1")
         self.assertIn(str(output_dir.expanduser().resolve()), command)
         self.assertIn("--display", command)
+        self.assertIn("--cast-limit", command)
+        self.assertEqual(command[command.index("--cast-limit") + 1], "20")
         self.assertIn("--refresh", command)
         self.assertIn("--ui-result", command)
         self.assertNotIn("--ui", command)
@@ -281,7 +297,9 @@ class UICommandTests(unittest.TestCase):
 
         self.assertIn("<title>En Çok İzlediğin Oyuncular</title>", document)
         self.assertIn("<h1>En Çok İzlediğin Oyuncular</h1>", document)
-        self.assertIn("Kullanıcı adı veya profil bağlantısı", document)
+        self.assertIn("Letterboxd hesabı", document)
+        self.assertIn('id="castLimit"', document)
+        self.assertIn('castLimit: Number(castLimit.value)', document)
         self.assertNotIn("Letterboxd Oyuncu Analizi", document)
         self.assertNotIn("brand-mark", document)
         self.assertIn("Analiz et", document)
@@ -331,8 +349,9 @@ class UIJobRegistryTests(unittest.TestCase):
             self.touched = MODULE.time.monotonic()
             self.__class__.instances.append(self)
 
-        def start(self, account, _refresh):
+        def start(self, account, _refresh, cast_limit=20):
             self.account = account
+            self.cast_limit = cast_limit
             self.running = True
             return self.snapshot()
 
@@ -372,14 +391,21 @@ class UIJobRegistryTests(unittest.TestCase):
                 registry.start("another", False)
 
             registry.cancel(first["jobId"])
-            second = registry.start("another", False)
+            second = registry.start("another", False, 30)
 
             self.assertNotEqual(first["jobId"], second["jobId"])
+            self.assertEqual(self.FakeManager.instances[-1].cast_limit, 30)
             self.assertEqual(registry.snapshot(first["jobId"])["jobId"], first["jobId"])
             self.assertEqual(
                 registry.export_workbook(second["jobId"], {})[1],
                 second["jobId"].encode("ascii"),
             )
+
+    def test_registry_rejects_invalid_cast_limit(self):
+        registry = MODULE.UIJobRegistry(Path("/tmp"))
+
+        with self.assertRaisesRegex(ValueError, "1 ile 100"):
+            registry.start("kaan", False, 0)
 
     def test_registry_rejects_unknown_job_ids(self):
         registry = MODULE.UIJobRegistry(Path("/tmp"))
