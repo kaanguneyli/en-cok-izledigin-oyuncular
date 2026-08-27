@@ -371,6 +371,7 @@ class UICommandTests(unittest.TestCase):
         self.assertIn('aria-label="Filmleri filtrele"', document)
         self.assertIn('class="filter-label">Filtrele</span>', document)
         self.assertIn('<option value="0" selected>Sınırsız</option>', document)
+        self.assertIn('<option value="20">20 · Önerilen</option>', document)
         self.assertIn('<option value="200">200</option>', document)
         self.assertIn('<option value="all">Hepsi</option>', document)
         self.assertIn('id="previousPage"', document)

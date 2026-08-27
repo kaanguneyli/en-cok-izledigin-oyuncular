@@ -2009,7 +2009,7 @@ UI_HTML = r"""<!doctype html>
         <div class="result-title"><h2>Oyuncular</h2><span id="resultCount" class="result-count"></span></div>
         <div class="result-tools">
           <label class="cast-limit" for="castLimit">Film başına oyuncu
-            <select id="castLimit"><option value="0" selected>Sınırsız</option><option value="10">10</option><option value="20">20</option><option value="30">30</option><option value="50">50</option></select>
+            <select id="castLimit"><option value="0" selected>Sınırsız</option><option value="10">10</option><option value="20">20 · Önerilen</option><option value="30">30</option><option value="50">50</option></select>
           </label>
           <button id="filmFilterButton" class="filter-button" type="button" aria-label="Filmleri filtrele" aria-haspopup="dialog" aria-pressed="false"><svg class="filter-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M22 3H2l8 9.46V19l4 2v-8.54L22 3z"></path></svg><span class="filter-label">Filtrele</span><span id="filmFilterCount" class="filter-count hidden"></span></button>
           <input id="search" class="search" type="text" autocomplete="off" placeholder="Oyuncu veya film ara">
