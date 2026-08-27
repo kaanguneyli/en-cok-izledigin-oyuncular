@@ -20,6 +20,10 @@ Hesap argümanı verilmezse tarayıcı arayüzü açılır. Arayüz analiz sıra
 python3 outputs/letterboxd_actors.py
 ```
 
+Arayüz ilk sonucu film başına oyuncu sınırı olmadan gösterir. Sonuç ekranındaki
+`Film başına oyuncu` menüsünden ilk 10, 20, 30 veya 50 oyuncuya geçilebilir;
+arama, film filtresi ve Excel çıktısı seçilen sınıra göre güncellenir.
+
 ## Docker
 
 ```bash

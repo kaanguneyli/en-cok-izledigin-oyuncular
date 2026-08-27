@@ -732,8 +732,15 @@ def rank_combined_actors(
 
 
 def rankings_payload(
-    rankings: list[ActorTotal], top: int | None
+    rankings: list[ActorTotal],
+    top: int | None,
+    casts: dict[str, list[Actor]] | None = None,
 ) -> list[dict[str, object]]:
+    cast_positions = {
+        (film_slug, actor.slug): position
+        for film_slug, actors in (casts or {}).items()
+        for position, actor in enumerate(actors, start=1)
+    }
     selected = rankings[:top] if top else rankings
     rows: list[dict[str, object]] = []
     for rank, total in enumerate(selected, start=1):
@@ -746,13 +753,15 @@ def rankings_payload(
         for slug, (title, weight) in sorted_films:
             suffix = f" x{weight}" if weight > 1 else ""
             film_parts.append(f"{title}{suffix}")
-            film_entries.append(
-                {
-                    "slug": slug,
-                    "title": spreadsheet_safe(title),
-                    "views": weight,
-                }
-            )
+            entry: dict[str, object] = {
+                "slug": slug,
+                "title": spreadsheet_safe(title),
+                "views": weight,
+            }
+            cast_position = cast_positions.get((slug, total.actor.slug))
+            if cast_position is not None:
+                entry["castPosition"] = cast_position
+            film_entries.append(entry)
         rows.append(
             {
                 "rank": rank,
@@ -810,6 +819,10 @@ def ui_export_payload(
     if sort_key not in {"appearances", "uniqueFilms", "rewatches"}:
         sort_key = "appearances"
     sort_direction = "asc" if options.get("sortDirection") == "asc" else "desc"
+    try:
+        cast_limit = max(0, int(options.get("castLimit", 0)))
+    except (TypeError, ValueError):
+        cast_limit = 0
 
     export_rows: list[dict[str, object]] = []
     source_rows = result.get("rows", [])
@@ -827,6 +840,12 @@ def ui_export_payload(
                     if not slug or slug in excluded:
                         continue
                     try:
+                        cast_position = max(1, int(entry.get("castPosition", 1)))
+                    except (TypeError, ValueError):
+                        cast_position = 1
+                    if cast_limit and cast_position > cast_limit:
+                        continue
+                    try:
                         views = max(1, int(entry.get("views", 1)))
                     except (TypeError, ValueError):
                         views = 1
@@ -835,6 +854,7 @@ def ui_export_payload(
                             "slug": slug,
                             "title": spreadsheet_safe(str(entry.get("title", slug))),
                             "views": views,
+                            "castPosition": cast_position,
                         }
                     )
             if not entries:
@@ -897,6 +917,7 @@ def ui_export_payload(
     direction_label = "artan" if sort_direction == "asc" else "azalan"
     return {
         "username": spreadsheet_safe(str(result.get("username", "letterboxd"))),
+        "castLimit": cast_limit,
         "summary": {
             "totalViews": total_views,
             "uniqueFilms": len(included_films),
@@ -1197,9 +1218,7 @@ def print_top(rankings: list[ActorTotal], count: int) -> None:
         )
 
 
-def build_ui_command(
-    account: str, output_dir: Path, refresh: bool, cast_limit: int = 20
-) -> list[str]:
+def build_ui_command(account: str, output_dir: Path, refresh: bool) -> list[str]:
     command = [
         sys.executable,
         "-u",
@@ -1210,7 +1229,7 @@ def build_ui_command(
         "--display",
         "0",
         "--cast-limit",
-        str(cast_limit),
+        "0",
         "--ui-result",
     ]
     if refresh:
@@ -1968,9 +1987,6 @@ UI_HTML = r"""<!doctype html>
         </div>
       </div>
       <div class="options">
-        <label class="cast-limit" for="castLimit">Film başına oyuncu
-          <select id="castLimit"><option value="10">10</option><option value="20" selected>20</option><option value="30">30</option><option value="50">50</option></select>
-        </label>
         <label class="check"><input id="refresh" type="checkbox"><span class="switch" aria-hidden="true"></span><span>Önbelleği yenile</span></label>
       </div>
       <div class="actions">
@@ -1992,6 +2008,9 @@ UI_HTML = r"""<!doctype html>
       <div class="result-toolbar">
         <div class="result-title"><h2>Oyuncular</h2><span id="resultCount" class="result-count"></span></div>
         <div class="result-tools">
+          <label class="cast-limit" for="castLimit">Film başına oyuncu
+            <select id="castLimit"><option value="0" selected>Sınırsız</option><option value="10">10</option><option value="20">20</option><option value="30">30</option><option value="50">50</option></select>
+          </label>
           <button id="filmFilterButton" class="filter-button" type="button" aria-label="Filmleri filtrele" aria-haspopup="dialog" aria-pressed="false"><svg class="filter-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M22 3H2l8 9.46V19l4 2v-8.54L22 3z"></path></svg><span class="filter-label">Filtrele</span><span id="filmFilterCount" class="filter-count hidden"></span></button>
           <input id="search" class="search" type="text" autocomplete="off" placeholder="Oyuncu veya film ara">
           <button id="exportExcel" class="export-button" type="button"><svg class="export-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><path d="m7 10 5 5 5-5"></path><path d="M12 15V3"></path></svg><span id="exportLabel" class="export-label">Excel indir</span></button>
@@ -2198,7 +2217,11 @@ UI_HTML = r"""<!doctype html>
         title.textContent = film.title;
         const meta = document.createElement("span");
         meta.className = "film-filter-meta";
-        meta.textContent = `${formatNumber(film.views)} izlenme · ${formatNumber(film.actorCount)} oyuncu`;
+        const selectedCastLimit = Number(castLimit.value) || 0;
+        const visibleActorCount = selectedCastLimit
+          ? Math.min(Number(film.actorCount) || 0, selectedCastLimit)
+          : Number(film.actorCount) || 0;
+        meta.textContent = `${formatNumber(film.views)} izlenme · ${formatNumber(visibleActorCount)} oyuncu`;
         row.append(checkbox, title, meta);
         fragment.appendChild(row);
       }
@@ -2213,9 +2236,11 @@ UI_HTML = r"""<!doctype html>
     }
 
     function applySelectedFilms() {
+      const selectedCastLimit = Number(castLimit.value) || 0;
       currentRows = sourceRows.map((row) => {
         const entries = (row.filmEntries || []).filter(
-          (entry) => !excludedFilms.has(entry.slug),
+          (entry) => !excludedFilms.has(entry.slug)
+            && (!selectedCastLimit || (Number(entry.castPosition) || 1) <= selectedCastLimit),
         );
         if (!entries.length) return null;
         const appearances = entries.reduce(
@@ -2358,6 +2383,7 @@ UI_HTML = r"""<!doctype html>
             query: search.value,
             sortKey,
             sortDirection,
+            castLimit: Number(castLimit.value) || 0,
           }),
         });
         if (!response.ok) {
@@ -2406,6 +2432,7 @@ UI_HTML = r"""<!doctype html>
       }) : [];
       excludedFilms = new Set();
       draftExcludedFilms = new Set();
+      castLimit.value = "0";
       search.value = "";
       currentPage = 1;
       sortKey = "appearances";
@@ -2419,7 +2446,6 @@ UI_HTML = r"""<!doctype html>
       const running = state.status === "running";
       const finished = state.status === "success" || state.status === "warning";
       account.disabled = running;
-      castLimit.disabled = running;
       refresh.disabled = running;
       run.disabled = running;
       cancel.disabled = !running;
@@ -2473,7 +2499,6 @@ UI_HTML = r"""<!doctype html>
           method: "POST",
           body: JSON.stringify({
             account: account.value,
-            castLimit: Number(castLimit.value),
             refresh: refresh.checked,
           }),
         });
@@ -2489,6 +2514,7 @@ UI_HTML = r"""<!doctype html>
         activityPanel.classList.remove("hidden");
       }
     });
+    castLimit.addEventListener("change", applySelectedFilms);
     search.addEventListener("input", () => { currentPage = 1; renderRows(); });
     for (const button of sortButtons) {
       button.addEventListener("click", () => {
@@ -2614,9 +2640,7 @@ class UIJobManager:
             running = self.process is not None and self.process.poll() is None
             return running, self.last_touched
 
-    def start(
-        self, account: str, refresh: bool, cast_limit: int = 20
-    ) -> dict[str, object]:
+    def start(self, account: str, refresh: bool) -> dict[str, object]:
         username = normalize_username(account)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
@@ -2624,8 +2648,7 @@ class UIJobManager:
             if self.process is not None and self.process.poll() is None:
                 raise ValueError("Bir analiz zaten çalışıyor.")
             self.logs = [
-                f"@{username} için analiz başlatıldı; "
-                f"film başına ilk {cast_limit} oyuncu kullanılacak."
+                f"@{username} için analiz başlatıldı; tüm oyuncular kullanılacak."
             ]
             self.state = "running"
             self.label = "Çalışıyor"
@@ -2634,7 +2657,7 @@ class UIJobManager:
             self.last_touched = time.monotonic()
             try:
                 self.process = subprocess.Popen(
-                    build_ui_command(username, self.cache_dir, refresh, cast_limit),
+                    build_ui_command(username, self.cache_dir, refresh),
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     universal_newlines=True,
@@ -2769,12 +2792,8 @@ class UIJobRegistry:
             if self.active_job_id == job_id:
                 self.active_job_id = ""
 
-    def start(
-        self, account: str, refresh: bool, cast_limit: int = 20
-    ) -> dict[str, object]:
+    def start(self, account: str, refresh: bool) -> dict[str, object]:
         username = normalize_username(account)
-        if not 1 <= cast_limit <= 100:
-            raise ValueError("Film başına oyuncu sayısı 1 ile 100 arasında olmalı.")
         with self.lock:
             self._cleanup_locked()
             active = self.jobs.get(self.active_job_id)
@@ -2788,7 +2807,7 @@ class UIJobRegistry:
             self.active_job_id = job_id
             self._cleanup_locked()
         try:
-            return manager.start(username, refresh, cast_limit)
+            return manager.start(username, refresh)
         except Exception:
             with self.lock:
                 self.jobs.pop(job_id, None)
@@ -2914,11 +2933,9 @@ def launch_ui(
             try:
                 payload = self.read_json()
                 if route == "/api/run":
-                    cast_limit = int(payload.get("castLimit", 20))
                     state = registry.start(
                         str(payload.get("account", "")),
                         bool(payload.get("refresh", False)),
-                        cast_limit,
                     )
                     self.send_json(state, 202)
                 elif route == "/api/cancel":
@@ -3125,7 +3142,7 @@ def run(args: argparse.Namespace) -> int:
             "rewatches": total_views - unique_films,
         },
         "films": film_catalog_payload(all_films, combined_weights, casts),
-        "rows": rankings_payload(rankings, args.top or None),
+        "rows": rankings_payload(rankings, args.top or None, casts),
         "errors": [
             {
                 "film": spreadsheet_safe(film.title),

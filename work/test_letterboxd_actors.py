@@ -182,6 +182,23 @@ class CastAndRankingTests(unittest.TestCase):
             [{"slug": "arrival", "title": "Arrival (2016)", "views": 3}],
         )
 
+    def test_rankings_payload_includes_cast_position_for_ui_filtering(self):
+        actors = [
+            MODULE.Actor("lead", "Lead"),
+            MODULE.Actor("support", "Support"),
+        ]
+        totals = [
+            MODULE.ActorTotal(
+                actor=actors[1],
+                appearances=1,
+                films={"arrival": ("Arrival (2016)", 1)},
+            )
+        ]
+
+        row = MODULE.rankings_payload(totals, None, {"arrival": actors})[0]
+
+        self.assertEqual(row["filmEntries"][0]["castPosition"], 2)
+
     def test_film_catalog_orders_by_views_then_actor_count(self):
         films = {
             "arrival": MODULE.Film("arrival", "Arrival (2016)"),
@@ -262,6 +279,44 @@ class CastAndRankingTests(unittest.TestCase):
         searched = MODULE.ui_export_payload(result, {"query": "dune"})
         self.assertEqual([row["actor"] for row in searched["rows"]], ["Rebecca Ferguson"])
 
+    def test_ui_export_respects_cast_limit(self):
+        result = {
+            "username": "kaan",
+            "films": [{"slug": "arrival", "views": 1}],
+            "rows": [
+                {
+                    "actor": "Lead",
+                    "filmEntries": [
+                        {
+                            "slug": "arrival",
+                            "title": "Arrival",
+                            "views": 1,
+                            "castPosition": 1,
+                        }
+                    ],
+                },
+                {
+                    "actor": "Cameo",
+                    "filmEntries": [
+                        {
+                            "slug": "arrival",
+                            "title": "Arrival",
+                            "views": 1,
+                            "castPosition": 25,
+                        }
+                    ],
+                },
+            ],
+        }
+
+        limited = MODULE.ui_export_payload(result, {"castLimit": 20})
+        unlimited = MODULE.ui_export_payload(result, {"castLimit": 0})
+
+        self.assertEqual([row["actor"] for row in limited["rows"]], ["Lead"])
+        self.assertEqual(
+            [row["actor"] for row in unlimited["rows"]], ["Cameo", "Lead"]
+        )
+
 
 class UsernameTests(unittest.TestCase):
     def test_accepts_username_or_profile_url(self):
@@ -283,7 +338,7 @@ class UICommandTests(unittest.TestCase):
         self.assertIn(str(output_dir.expanduser().resolve()), command)
         self.assertIn("--display", command)
         self.assertIn("--cast-limit", command)
-        self.assertEqual(command[command.index("--cast-limit") + 1], "20")
+        self.assertEqual(command[command.index("--cast-limit") + 1], "0")
         self.assertIn("--refresh", command)
         self.assertIn("--ui-result", command)
         self.assertNotIn("--ui", command)
@@ -299,7 +354,11 @@ class UICommandTests(unittest.TestCase):
         self.assertIn("<h1>En Çok İzlediğin Oyuncular</h1>", document)
         self.assertIn("Letterboxd hesabı", document)
         self.assertIn('id="castLimit"', document)
-        self.assertIn('castLimit: Number(castLimit.value)', document)
+        self.assertGreater(
+            document.index('id="castLimit"'), document.index('id="results"')
+        )
+        self.assertNotIn('account: account.value,\n            castLimit:', document)
+        self.assertIn('castLimit: Number(castLimit.value) || 0', document)
         self.assertNotIn("Letterboxd Oyuncu Analizi", document)
         self.assertNotIn("brand-mark", document)
         self.assertIn("Analiz et", document)
@@ -311,7 +370,7 @@ class UICommandTests(unittest.TestCase):
         self.assertIn('id="filmFilterDialog"', document)
         self.assertIn('aria-label="Filmleri filtrele"', document)
         self.assertIn('class="filter-label">Filtrele</span>', document)
-        self.assertIn('<option value="20" selected>20</option>', document)
+        self.assertIn('<option value="0" selected>Sınırsız</option>', document)
         self.assertIn('<option value="200">200</option>', document)
         self.assertIn('<option value="all">Hepsi</option>', document)
         self.assertIn('id="previousPage"', document)
@@ -349,9 +408,8 @@ class UIJobRegistryTests(unittest.TestCase):
             self.touched = MODULE.time.monotonic()
             self.__class__.instances.append(self)
 
-        def start(self, account, _refresh, cast_limit=20):
+        def start(self, account, _refresh):
             self.account = account
-            self.cast_limit = cast_limit
             self.running = True
             return self.snapshot()
 
@@ -391,21 +449,14 @@ class UIJobRegistryTests(unittest.TestCase):
                 registry.start("another", False)
 
             registry.cancel(first["jobId"])
-            second = registry.start("another", False, 30)
+            second = registry.start("another", False)
 
             self.assertNotEqual(first["jobId"], second["jobId"])
-            self.assertEqual(self.FakeManager.instances[-1].cast_limit, 30)
             self.assertEqual(registry.snapshot(first["jobId"])["jobId"], first["jobId"])
             self.assertEqual(
                 registry.export_workbook(second["jobId"], {})[1],
                 second["jobId"].encode("ascii"),
             )
-
-    def test_registry_rejects_invalid_cast_limit(self):
-        registry = MODULE.UIJobRegistry(Path("/tmp"))
-
-        with self.assertRaisesRegex(ValueError, "1 ile 100"):
-            registry.start("kaan", False, 0)
 
     def test_registry_rejects_unknown_job_ids(self):
         registry = MODULE.UIJobRegistry(Path("/tmp"))
