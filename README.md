@@ -23,7 +23,10 @@ python3 outputs/letterboxd_actors.py
 Arayüz ilk sonucu film başına oyuncu sınırı olmadan gösterir. Sonuç ekranındaki
 `Film başına oyuncu` menüsünden ilk 10, 20, 30 veya 50 oyuncuya geçilebilir;
 20 çoğu yapımda ana ve belirgin yardımcı kadroyu kapsayan önerilen değerdir.
-Arama, film filtresi ve Excel çıktısı seçilen sınıra göre güncellenir.
+`Serileri birleştir` seçeneği, profilde aynı resmi koleksiyondan en az üç film
+bulunduğunda bu filmleri oyuncu başına tek katkı sayar. Oyuncu sınırı birleşmeden
+önce her filme ayrı uygulanır; iki filmlik koleksiyonlar birleştirilmez. Arama,
+film filtresi ve Excel çıktısı seçilen ayarlara göre güncellenir.
 
 ## Docker
 
@@ -41,7 +44,7 @@ Repo kökündeki `render.yaml`, ücretsiz Frankfurt web servisini ve Docker buil
 ## Ortam değişkenleri
 
 - `PORT`: Web sunucusunun portu. Varsayılan `8000`.
-- `DATABASE_URL`: İsteğe bağlı PostgreSQL bağlantısı. Verilirse cast önbelleği yeniden başlatmalarda korunur.
+- `DATABASE_URL`: İsteğe bağlı PostgreSQL bağlantısı. Verilirse cast ve seri bilgisi önbelleği yeniden başlatmalarda korunur.
 - `LETTERBOXD_HOSTED=1`: Sunucuyu `0.0.0.0` üzerinde başlatır ve yerel kapatma kontrolünü gizler.
 - `LETTERBOXD_XLSX_BACKEND=xlsxwriter`: Taşınabilir Excel motorunu kullanır; Docker imajında varsayılandır.
 

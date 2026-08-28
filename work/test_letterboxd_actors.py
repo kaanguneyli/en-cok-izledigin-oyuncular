@@ -135,6 +135,9 @@ class CastAndRankingTests(unittest.TestCase):
         parser.feed(
             """
             <a href="/actor/not-cast/">Not Cast</a>
+            <h2><a href="/films/in/arrival-collection/by/release-earliest/">
+              Related Films
+            </a></h2>
             <div id="tab-panel-cast"><div class="cast-list">
               <a href="/actor/amy-adams/">Amy Adams</a>
               <a href="/actor/jeremy-renner/">Jeremy Renner</a>
@@ -143,6 +146,9 @@ class CastAndRankingTests(unittest.TestCase):
             """
         )
         self.assertEqual([actor.slug for actor in parser.actors], ["amy-adams", "jeremy-renner"])
+        self.assertEqual(
+            parser.series, MODULE.FilmSeries("arrival-collection", "Arrival")
+        )
 
         arrival = MODULE.Film("arrival", "Arrival (2016)")
         enchanted = MODULE.Film("enchanted", "Enchanted (2007)")
@@ -317,6 +323,114 @@ class CastAndRankingTests(unittest.TestCase):
             [row["actor"] for row in unlimited["rows"]], ["Cameo", "Lead"]
         )
 
+    def test_ui_export_merges_only_series_with_at_least_three_profile_films(self):
+        result = {
+            "username": "kaan",
+            "films": [
+                {
+                    "slug": "wizard-1",
+                    "title": "Wizard 1",
+                    "views": 2,
+                    "seriesSlug": "wizard-collection",
+                    "seriesTitle": "Wizard",
+                    "seriesFilmCount": 3,
+                },
+                {
+                    "slug": "wizard-2",
+                    "title": "Wizard 2",
+                    "views": 1,
+                    "seriesSlug": "wizard-collection",
+                    "seriesTitle": "Wizard",
+                    "seriesFilmCount": 3,
+                },
+                {
+                    "slug": "wizard-3",
+                    "title": "Wizard 3",
+                    "views": 1,
+                    "seriesSlug": "wizard-collection",
+                    "seriesTitle": "Wizard",
+                    "seriesFilmCount": 3,
+                },
+                {
+                    "slug": "duology-1",
+                    "title": "Duology 1",
+                    "views": 1,
+                    "seriesSlug": "duology-collection",
+                    "seriesTitle": "Duology",
+                    "seriesFilmCount": 2,
+                },
+                {
+                    "slug": "duology-2",
+                    "title": "Duology 2",
+                    "views": 1,
+                    "seriesSlug": "duology-collection",
+                    "seriesTitle": "Duology",
+                    "seriesFilmCount": 2,
+                },
+            ],
+            "rows": [
+                {
+                    "actor": "Series Regular",
+                    "filmEntries": [
+                        {
+                            **film,
+                            "castPosition": position,
+                        }
+                        for position, film in enumerate(
+                            [
+                                {
+                                    "slug": "wizard-1",
+                                    "title": "Wizard 1",
+                                    "views": 2,
+                                    "seriesSlug": "wizard-collection",
+                                    "seriesTitle": "Wizard",
+                                    "seriesFilmCount": 3,
+                                },
+                                {
+                                    "slug": "wizard-2",
+                                    "title": "Wizard 2",
+                                    "views": 1,
+                                    "seriesSlug": "wizard-collection",
+                                    "seriesTitle": "Wizard",
+                                    "seriesFilmCount": 3,
+                                },
+                                {
+                                    "slug": "duology-1",
+                                    "title": "Duology 1",
+                                    "views": 1,
+                                    "seriesSlug": "duology-collection",
+                                    "seriesTitle": "Duology",
+                                    "seriesFilmCount": 2,
+                                },
+                                {
+                                    "slug": "duology-2",
+                                    "title": "Duology 2",
+                                    "views": 1,
+                                    "seriesSlug": "duology-collection",
+                                    "seriesTitle": "Duology",
+                                    "seriesFilmCount": 2,
+                                },
+                            ],
+                            start=1,
+                        )
+                    ],
+                }
+            ],
+        }
+
+        merged = MODULE.ui_export_payload(result, {"mergeSeries": True})
+        unmerged = MODULE.ui_export_payload(result, {"mergeSeries": False})
+
+        self.assertEqual(merged["summary"], {"totalViews": 3, "uniqueFilms": 3, "rewatches": 0})
+        self.assertEqual(merged["rows"][0]["appearances"], 3)
+        self.assertEqual(merged["rows"][0]["uniqueFilms"], 3)
+        self.assertEqual(
+            merged["rows"][0]["films"],
+            "Wizard serisi; Duology 1; Duology 2",
+        )
+        self.assertEqual(unmerged["rows"][0]["appearances"], 5)
+        self.assertEqual(unmerged["rows"][0]["uniqueFilms"], 4)
+
 
 class UsernameTests(unittest.TestCase):
     def test_accepts_username_or_profile_url(self):
@@ -324,6 +438,27 @@ class UsernameTests(unittest.TestCase):
         self.assertEqual(
             MODULE.normalize_username("https://letterboxd.com/kaan_1/"), "kaan_1"
         )
+
+
+class CastCacheTests(unittest.TestCase):
+    def test_cache_round_trips_cast_and_series_and_rejects_old_version(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "cache.json"
+            path.write_text(
+                json.dumps({"version": 1, "films": {"arrival": []}}),
+                encoding="utf-8",
+            )
+            self.assertIsNone(MODULE.CastCache(path).get("arrival"))
+
+            cache = MODULE.CastCache(path)
+            expected = MODULE.FilmPageData(
+                [MODULE.Actor("amy-adams", "Amy Adams")],
+                MODULE.FilmSeries("arrival-collection", "Arrival"),
+            )
+            cache.put("arrival", expected)
+            cache.save()
+
+            self.assertEqual(MODULE.CastCache(path).get("arrival"), expected)
 
 
 class UICommandTests(unittest.TestCase):
@@ -354,11 +489,13 @@ class UICommandTests(unittest.TestCase):
         self.assertIn("<h1>En Çok İzlediğin Oyuncular</h1>", document)
         self.assertIn("Letterboxd hesabı", document)
         self.assertIn('id="castLimit"', document)
+        self.assertIn('id="mergeSeries"', document)
         self.assertGreater(
             document.index('id="castLimit"'), document.index('id="results"')
         )
         self.assertNotIn('account: account.value,\n            castLimit:', document)
         self.assertIn('castLimit: Number(castLimit.value) || 0', document)
+        self.assertIn('mergeSeries: mergeSeries.checked', document)
         self.assertNotIn("Letterboxd Oyuncu Analizi", document)
         self.assertNotIn("brand-mark", document)
         self.assertIn("Analiz et", document)
@@ -491,7 +628,7 @@ class OutputModeTests(unittest.TestCase):
             "collect_profile_listings",
             return_value={"films": films, "diary": diary},
         ), patch.object(
-            MODULE, "collect_casts", return_value=(casts, [])
+            MODULE, "collect_casts", return_value=(casts, {}, [])
         ), patch.object(MODULE, "write_workbook") as write_workbook, redirect_stdout(
             stdout
         ), redirect_stderr(

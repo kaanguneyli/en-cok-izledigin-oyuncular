@@ -41,8 +41,10 @@ USER_AGENT = (
 )
 FILM_HREF_RE = re.compile(r"^/film/([^/]+)/$")
 ACTOR_HREF_RE = re.compile(r"^/actor/([^/]+)/$")
+SERIES_HREF_RE = re.compile(r"^/films/in/([^/]+)(?:/|$)")
 PROFILE_URL_RE = re.compile(r"^https?://(?:www\.)?letterboxd\.com/([^/?#]+)/?", re.I)
 UI_RESULT_PREFIX = "LETTERBOXD_UI_RESULT="
+MIN_SERIES_FILMS = 3
 
 
 class ScrapeError(RuntimeError):
@@ -67,6 +69,18 @@ class Actor:
     @property
     def url(self) -> str:
         return f"{BASE_URL}/actor/{self.slug}/"
+
+
+@dataclass(frozen=True)
+class FilmSeries:
+    slug: str
+    title: str
+
+
+@dataclass
+class FilmPageData:
+    actors: list[Actor]
+    series: FilmSeries | None = None
 
 
 @dataclass
@@ -170,8 +184,27 @@ class ListingParser(HTMLParser):
         self._diary_row_film = Film(match.group(1), title)
 
 
+def series_title_from_slug(slug: str) -> str:
+    stem = re.sub(r"-(?:collection|koleksiyonu)$", "", slug, flags=re.I)
+    tokens = [token for token in stem.split("-") if token]
+    words: list[str] = []
+    index = 0
+    while index < len(tokens):
+        if len(tokens[index]) == 1:
+            letters = []
+            while index < len(tokens) and len(tokens[index]) == 1:
+                letters.append(tokens[index].upper())
+                index += 1
+            words.append(".".join(letters) + ".")
+            continue
+        token = tokens[index]
+        words.append(token.upper() if token.casefold() in {"mcu", "dc"} else token.title())
+        index += 1
+    return " ".join(words) or slug
+
+
 class CastParser(HTMLParser):
-    """Extract actor links, preferring Letterboxd's explicit cast panel."""
+    """Extract the cast and official Related Films collection from a film page."""
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
@@ -180,6 +213,7 @@ class CastParser(HTMLParser):
         self._current: tuple[str, bool, list[str]] | None = None
         self._panel_actors: list[Actor] = []
         self._all_actors: list[Actor] = []
+        self.series: FilmSeries | None = None
 
     @property
     def actors(self) -> list[Actor]:
@@ -204,6 +238,12 @@ class CastParser(HTMLParser):
         match = ACTOR_HREF_RE.fullmatch(attributes.get("href", ""))
         if match:
             self._current = (match.group(1), self._panel_depth > 0, [])
+            return
+
+        series_match = SERIES_HREF_RE.match(attributes.get("href", ""))
+        if series_match and self.series is None:
+            slug = series_match.group(1)
+            self.series = FilmSeries(slug, series_title_from_slug(slug))
 
     def handle_data(self, data: str) -> None:
         if self._current is not None:
@@ -325,12 +365,12 @@ def build_ssl_context() -> ssl.SSLContext:
 
 
 class CastCache:
-    VERSION = 1
+    VERSION = 2
 
     def __init__(self, path: Path, enabled: bool = True) -> None:
         self.path = path
         self.enabled = enabled
-        self.data: dict[str, list[dict[str, str]]] = {}
+        self.data: dict[str, dict[str, object]] = {}
         if enabled:
             self._load()
 
@@ -342,19 +382,40 @@ class CastCache:
         except (FileNotFoundError, json.JSONDecodeError, OSError, AttributeError):
             self.data = {}
 
-    def get(self, slug: str) -> list[Actor] | None:
+    def get(self, slug: str) -> FilmPageData | None:
         if not self.enabled or slug not in self.data:
             return None
         try:
-            return [Actor(item["slug"], item["name"]) for item in self.data[slug]]
-        except (KeyError, TypeError):
+            cached = self.data[slug]
+            actors_value = cached["actors"]
+            series_value = cached["series"]
+            if not isinstance(actors_value, list):
+                return None
+            actors = [Actor(item["slug"], item["name"]) for item in actors_value]
+            series = None
+            if isinstance(series_value, dict):
+                series = FilmSeries(
+                    str(series_value["slug"]), str(series_value["title"])
+                )
+            elif series_value is not None:
+                return None
+            return FilmPageData(actors, series)
+        except (KeyError, TypeError, AttributeError):
             return None
 
-    def put(self, slug: str, actors: Iterable[Actor]) -> None:
+    def put(self, slug: str, page_data: FilmPageData) -> None:
         if self.enabled:
-            self.data[slug] = [
-                {"slug": actor.slug, "name": actor.name} for actor in actors
-            ]
+            self.data[slug] = {
+                "actors": [
+                    {"slug": actor.slug, "name": actor.name}
+                    for actor in page_data.actors
+                ],
+                "series": (
+                    {"slug": page_data.series.slug, "title": page_data.series.title}
+                    if page_data.series
+                    else None
+                ),
+            }
 
     def save(self) -> None:
         if not self.enabled:
@@ -391,39 +452,63 @@ class PostgresCastCache:
                     CREATE TABLE IF NOT EXISTS letterboxd_cast_cache (
                         film_slug TEXT PRIMARY KEY,
                         actors_json TEXT NOT NULL,
+                        series_json TEXT,
                         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                     )
                     """
+                )
+                cursor.execute(
+                    "ALTER TABLE letterboxd_cast_cache "
+                    "ADD COLUMN IF NOT EXISTS series_json TEXT"
                 )
             self.connection.commit()
         except Exception as error:
             raise ScrapeError(f"PostgreSQL önbelleğine bağlanılamadı: {error}") from error
 
-    def get(self, slug: str) -> list[Actor] | None:
+    def get(self, slug: str) -> FilmPageData | None:
         if not self.enabled or self.connection is None:
             return None
         try:
             with self.lock:
                 with self.connection.cursor() as cursor:
                     cursor.execute(
-                        "SELECT actors_json FROM letterboxd_cast_cache WHERE film_slug = %s",
+                        "SELECT actors_json, series_json FROM letterboxd_cast_cache "
+                        "WHERE film_slug = %s",
                         (slug,),
                     )
                     row = cursor.fetchone()
-            if row is None:
+            if row is None or row[1] is None:
                 return None
-            payload = json.loads(row[0])
-            return [Actor(item["slug"], item["name"]) for item in payload]
+            actors_payload = json.loads(row[0])
+            series_payload = json.loads(row[1])
+            actors = [Actor(item["slug"], item["name"]) for item in actors_payload]
+            series = None
+            if isinstance(series_payload, dict):
+                series = FilmSeries(
+                    str(series_payload["slug"]), str(series_payload["title"])
+                )
+            elif series_payload is not None:
+                return None
+            return FilmPageData(actors, series)
         except (KeyError, TypeError, json.JSONDecodeError):
             return None
         except Exception as error:
             raise ScrapeError(f"PostgreSQL önbelleği okunamadı: {error}") from error
 
-    def put(self, slug: str, actors: Iterable[Actor]) -> None:
+    def put(self, slug: str, page_data: FilmPageData) -> None:
         if not self.enabled or self.connection is None:
             return
-        payload = json.dumps(
-            [{"slug": actor.slug, "name": actor.name} for actor in actors],
+        actors_payload = json.dumps(
+            [{"slug": actor.slug, "name": actor.name} for actor in page_data.actors],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        series_payload = json.dumps(
+            (
+                {"slug": page_data.series.slug, "title": page_data.series.title}
+                if page_data.series
+                else None
+            ),
             ensure_ascii=False,
             separators=(",", ":"),
         )
@@ -432,12 +517,15 @@ class PostgresCastCache:
                 with self.connection.cursor() as cursor:
                     cursor.execute(
                         """
-                        INSERT INTO letterboxd_cast_cache (film_slug, actors_json, updated_at)
-                        VALUES (%s, %s, NOW())
+                        INSERT INTO letterboxd_cast_cache
+                            (film_slug, actors_json, series_json, updated_at)
+                        VALUES (%s, %s, %s, NOW())
                         ON CONFLICT (film_slug) DO UPDATE
-                        SET actors_json = EXCLUDED.actors_json, updated_at = NOW()
+                        SET actors_json = EXCLUDED.actors_json,
+                            series_json = EXCLUDED.series_json,
+                            updated_at = NOW()
                         """,
-                        (slug, payload),
+                        (slug, actors_payload, series_payload),
                     )
         except Exception as error:
             raise ScrapeError(f"PostgreSQL önbelleği yazılamadı: {error}") from error
@@ -612,10 +700,10 @@ def collect_profile_listings(
     return {mode: collections[mode] for mode in modes}
 
 
-def fetch_cast(client: HttpClient, film: Film) -> list[Actor]:
+def fetch_film_page_data(client: HttpClient, film: Film) -> FilmPageData:
     parser = CastParser()
     parser.feed(client.get(film.url))
-    return parser.actors
+    return FilmPageData(parser.actors, parser.series)
 
 
 def collect_casts(
@@ -625,8 +713,13 @@ def collect_casts(
     workers: int,
     refresh: bool,
     quiet: bool,
-) -> tuple[dict[str, list[Actor]], list[tuple[Film, str]]]:
+) -> tuple[
+    dict[str, list[Actor]],
+    dict[str, FilmSeries],
+    list[tuple[Film, str]],
+]:
     casts: dict[str, list[Actor]] = {}
+    film_series: dict[str, FilmSeries] = {}
     pending: list[Film] = []
 
     for film in films.values():
@@ -634,7 +727,9 @@ def collect_casts(
         if cached is None:
             pending.append(film)
         else:
-            casts[film.slug] = cached
+            casts[film.slug] = cached.actors
+            if cached.series:
+                film_series[film.slug] = cached.series
 
     if not quiet:
         print(
@@ -645,13 +740,18 @@ def collect_casts(
     errors: list[tuple[Film, str]] = []
     completed = 0
     with ThreadPoolExecutor(max_workers=max(1, workers)) as executor:
-        futures = {executor.submit(fetch_cast, client, film): film for film in pending}
+        futures = {
+            executor.submit(fetch_film_page_data, client, film): film
+            for film in pending
+        }
         for future in as_completed(futures):
             film = futures[future]
             try:
-                actors = future.result()
-                casts[film.slug] = actors
-                cache.put(film.slug, actors)
+                page_data = future.result()
+                casts[film.slug] = page_data.actors
+                if page_data.series:
+                    film_series[film.slug] = page_data.series
+                cache.put(film.slug, page_data)
             except Exception as error:  # Keep useful partial results for large profiles.
                 errors.append((film, str(error)))
             completed += 1
@@ -665,7 +765,7 @@ def collect_casts(
                 cache.save()
 
     cache.save()
-    return casts, errors
+    return casts, film_series, errors
 
 
 def limit_casts(
@@ -735,6 +835,8 @@ def rankings_payload(
     rankings: list[ActorTotal],
     top: int | None,
     casts: dict[str, list[Actor]] | None = None,
+    film_series: dict[str, FilmSeries] | None = None,
+    series_counts: Counter[str] | None = None,
 ) -> list[dict[str, object]]:
     cast_positions = {
         (film_slug, actor.slug): position
@@ -761,6 +863,15 @@ def rankings_payload(
             cast_position = cast_positions.get((slug, total.actor.slug))
             if cast_position is not None:
                 entry["castPosition"] = cast_position
+            series = (film_series or {}).get(slug)
+            if series:
+                entry.update(
+                    {
+                        "seriesSlug": series.slug,
+                        "seriesTitle": spreadsheet_safe(series.title),
+                        "seriesFilmCount": int((series_counts or {}).get(series.slug, 0)),
+                    }
+                )
             film_entries.append(entry)
         rows.append(
             {
@@ -781,6 +892,8 @@ def film_catalog_payload(
     films: dict[str, Film],
     weights: dict[str, int],
     casts: dict[str, list[Actor]],
+    film_series: dict[str, FilmSeries] | None = None,
+    series_counts: Counter[str] | None = None,
 ) -> list[dict[str, object]]:
     """Build the UI film list in viewing-count and cast-size order."""
     return [
@@ -789,6 +902,17 @@ def film_catalog_payload(
             "title": spreadsheet_safe(film.title),
             "views": weights[film_slug],
             "actorCount": len(casts.get(film_slug, [])),
+            **(
+                {
+                    "seriesSlug": film_series[film_slug].slug,
+                    "seriesTitle": spreadsheet_safe(film_series[film_slug].title),
+                    "seriesFilmCount": int(
+                        (series_counts or {}).get(film_series[film_slug].slug, 0)
+                    ),
+                }
+                if film_series and film_slug in film_series
+                else {}
+            ),
         }
         for film_slug, film in sorted(
             films.items(),
@@ -800,6 +924,73 @@ def film_catalog_payload(
             ),
         )
     ]
+
+
+def entry_has_mergeable_series(entry: dict[str, object]) -> bool:
+    if not str(entry.get("seriesSlug", "")):
+        return False
+    try:
+        return int(entry.get("seriesFilmCount", 0)) >= MIN_SERIES_FILMS
+    except (TypeError, ValueError):
+        return False
+
+
+def collapse_series_entries(
+    entries: list[dict[str, object]], merge_series: bool
+) -> list[dict[str, object]]:
+    if not merge_series:
+        return entries
+
+    collapsed: list[dict[str, object]] = []
+    seen_series: set[str] = set()
+    for entry in entries:
+        if not entry_has_mergeable_series(entry):
+            collapsed.append(entry)
+            continue
+        series_slug = str(entry["seriesSlug"])
+        if series_slug in seen_series:
+            continue
+        seen_series.add(series_slug)
+        series_title = str(entry.get("seriesTitle", series_slug))
+        series_film_count = int(entry.get("seriesFilmCount", MIN_SERIES_FILMS))
+        collapsed.append(
+            {
+                "slug": f"series:{series_slug}",
+                "title": spreadsheet_safe(f"{series_title} serisi"),
+                "views": 1,
+                "seriesSlug": series_slug,
+                "seriesTitle": spreadsheet_safe(series_title),
+                "seriesFilmCount": series_film_count,
+            }
+        )
+    return collapsed
+
+
+def effective_film_summary(
+    films: list[dict[str, object]], merge_series: bool
+) -> dict[str, int]:
+    total_views = 0
+    unique_films = 0
+    seen_series: set[str] = set()
+    for film in films:
+        if merge_series and entry_has_mergeable_series(film):
+            series_slug = str(film["seriesSlug"])
+            if series_slug in seen_series:
+                continue
+            seen_series.add(series_slug)
+            total_views += 1
+            unique_films += 1
+            continue
+        try:
+            total_views += max(1, int(film.get("views", 1)))
+        except (TypeError, ValueError):
+            total_views += 1
+        unique_films += 1
+    return {
+        "totalViews": total_views,
+        "uniqueFilms": unique_films,
+        "rewatches": total_views - unique_films,
+    }
 
 
 def ui_export_payload(
@@ -823,6 +1014,7 @@ def ui_export_payload(
         cast_limit = max(0, int(options.get("castLimit", 0)))
     except (TypeError, ValueError):
         cast_limit = 0
+    merge_series = bool(options.get("mergeSeries", False))
 
     export_rows: list[dict[str, object]] = []
     source_rows = result.get("rows", [])
@@ -849,17 +1041,29 @@ def ui_export_payload(
                         views = max(1, int(entry.get("views", 1)))
                     except (TypeError, ValueError):
                         views = 1
-                    entries.append(
-                        {
-                            "slug": slug,
-                            "title": spreadsheet_safe(str(entry.get("title", slug))),
-                            "views": views,
-                            "castPosition": cast_position,
-                        }
-                    )
+                    cleaned_entry: dict[str, object] = {
+                        "slug": slug,
+                        "title": spreadsheet_safe(str(entry.get("title", slug))),
+                        "views": views,
+                        "castPosition": cast_position,
+                    }
+                    series_slug = str(entry.get("seriesSlug", ""))
+                    if series_slug:
+                        cleaned_entry.update(
+                            {
+                                "seriesSlug": series_slug,
+                                "seriesTitle": spreadsheet_safe(
+                                    str(entry.get("seriesTitle", series_slug))
+                                ),
+                                "seriesFilmCount": entry.get("seriesFilmCount", 0),
+                            }
+                        )
+                    entries.append(cleaned_entry)
             if not entries:
                 continue
 
+            search_titles = " ".join(str(entry["title"]) for entry in entries)
+            entries = collapse_series_entries(entries, merge_series)
             appearances = sum(int(entry["views"]) for entry in entries)
             film_parts = []
             for entry in entries:
@@ -867,7 +1071,7 @@ def ui_export_payload(
                 film_parts.append(f"{entry['title']}{suffix}")
             films_text = "; ".join(film_parts)
             actor = spreadsheet_safe(str(source_row.get("actor", "")))
-            if query and query not in f"{actor} {films_text}".casefold():
+            if query and query not in f"{actor} {search_titles} {films_text}".casefold():
                 continue
             export_rows.append(
                 {
@@ -901,12 +1105,7 @@ def ui_export_payload(
             for film in source_films
             if isinstance(film, dict) and str(film.get("slug", "")) not in excluded
         ]
-    total_views = 0
-    for film in included_films:
-        try:
-            total_views += max(1, int(film.get("views", 1)))
-        except (TypeError, ValueError):
-            total_views += 1
+    summary = effective_film_summary(included_films, merge_series)
 
     errors = result.get("errors", [])
     sort_labels = {
@@ -918,13 +1117,15 @@ def ui_export_payload(
     return {
         "username": spreadsheet_safe(str(result.get("username", "letterboxd"))),
         "castLimit": cast_limit,
-        "summary": {
-            "totalViews": total_views,
-            "uniqueFilms": len(included_films),
-            "rewatches": total_views - len(included_films),
-        },
+        "mergeSeries": merge_series,
+        "summary": summary,
         "sortDescription": (
             f"Sıralama {sort_labels[sort_key]} sayısına göre {direction_label}."
+            + (
+                f" En az {MIN_SERIES_FILMS} filmlik seriler tek film sayıldı."
+                if merge_series
+                else ""
+            )
         ),
         "rows": export_rows,
         "errors": errors if isinstance(errors, list) else [],
@@ -1751,6 +1952,7 @@ UI_HTML = r"""<!doctype html>
     .check input:checked + .switch { border-color: var(--green); background: var(--green); }
     .check input:checked + .switch::after { transform: translateX(16px); }
     .check input:focus-visible + .switch { outline: 3px solid rgba(0, 165, 106, 0.22); outline-offset: 2px; }
+    .check:has(input:disabled) { cursor: default; opacity: 0.48; }
     .actions { display: flex; align-items: center; gap: 9px; min-height: 42px; }
     button {
       height: 42px;
@@ -1810,7 +2012,8 @@ UI_HTML = r"""<!doctype html>
     .result-toolbar { display: flex; align-items: end; justify-content: space-between; gap: 16px; margin: 24px 0 10px; }
     .result-title { display: flex; align-items: baseline; gap: 10px; }
     .result-toolbar h2 { margin: 0; font-size: 17px; letter-spacing: 0; }
-    .result-tools { display: flex; align-items: center; gap: 10px; }
+    .result-tools { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 10px; }
+    .series-check { min-height: 38px; }
     .result-count { color: var(--muted); font-size: 12px; white-space: nowrap; }
     .search { width: min(340px, 44vw) !important; height: 38px !important; }
     .filter-button {
@@ -2011,6 +2214,7 @@ UI_HTML = r"""<!doctype html>
           <label class="cast-limit" for="castLimit">Film başına oyuncu
             <select id="castLimit"><option value="0" selected>Sınırsız</option><option value="10">10</option><option value="20">20 · Önerilen</option><option value="30">30</option><option value="50">50</option></select>
           </label>
+          <label id="mergeSeriesLabel" class="check series-check" title="En az 3 filmini izlediğiniz serileri tek film sayar"><input id="mergeSeries" type="checkbox"><span class="switch" aria-hidden="true"></span><span>Serileri birleştir</span></label>
           <button id="filmFilterButton" class="filter-button" type="button" aria-label="Filmleri filtrele" aria-haspopup="dialog" aria-pressed="false"><svg class="filter-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M22 3H2l8 9.46V19l4 2v-8.54L22 3z"></path></svg><span class="filter-label">Filtrele</span><span id="filmFilterCount" class="filter-count hidden"></span></button>
           <input id="search" class="search" type="text" autocomplete="off" placeholder="Oyuncu veya film ara">
           <button id="exportExcel" class="export-button" type="button"><svg class="export-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><path d="m7 10 5 5 5-5"></path><path d="M12 15V3"></path></svg><span id="exportLabel" class="export-label">Excel indir</span></button>
@@ -2065,6 +2269,8 @@ UI_HTML = r"""<!doctype html>
     const form = document.querySelector("#form");
     const account = document.querySelector("#account");
     const castLimit = document.querySelector("#castLimit");
+    const mergeSeries = document.querySelector("#mergeSeries");
+    const mergeSeriesLabel = document.querySelector("#mergeSeriesLabel");
     const refresh = document.querySelector("#refresh");
     const run = document.querySelector("#run");
     const cancel = document.querySelector("#cancel");
@@ -2189,6 +2395,52 @@ UI_HTML = r"""<!doctype html>
       }).join("; ");
     }
 
+    function hasMergeableSeries(entry) {
+      return Boolean(entry.seriesSlug)
+        && Number(entry.seriesFilmCount || 0) >= 3;
+    }
+
+    function collapseSeriesEntries(entries) {
+      if (!mergeSeries.checked) return entries;
+      const collapsed = [];
+      const seenSeries = new Set();
+      for (const entry of entries) {
+        if (!hasMergeableSeries(entry)) {
+          collapsed.push(entry);
+          continue;
+        }
+        if (seenSeries.has(entry.seriesSlug)) continue;
+        seenSeries.add(entry.seriesSlug);
+        collapsed.push({
+          slug: `series:${entry.seriesSlug}`,
+          title: `${entry.seriesTitle || entry.seriesSlug} serisi`,
+          views: 1,
+          seriesSlug: entry.seriesSlug,
+          seriesTitle: entry.seriesTitle,
+          seriesFilmCount: entry.seriesFilmCount,
+        });
+      }
+      return collapsed;
+    }
+
+    function effectiveFilmSummary(films) {
+      let totalViews = 0;
+      let uniqueFilms = 0;
+      const seenSeries = new Set();
+      for (const film of films) {
+        if (mergeSeries.checked && hasMergeableSeries(film)) {
+          if (seenSeries.has(film.seriesSlug)) continue;
+          seenSeries.add(film.seriesSlug);
+          totalViews += 1;
+          uniqueFilms += 1;
+          continue;
+        }
+        totalViews += Number(film.views) || 1;
+        uniqueFilms += 1;
+      }
+      return {totalViews, uniqueFilms, rewatches: totalViews - uniqueFilms};
+    }
+
     function updateFilmSelection() {
       const excludedCount = draftExcludedFilms.size;
       filmSelection.textContent = `${formatNumber(filmCatalog.length - excludedCount)} dahil · ${formatNumber(excludedCount)} hariç`;
@@ -2238,11 +2490,12 @@ UI_HTML = r"""<!doctype html>
     function applySelectedFilms() {
       const selectedCastLimit = Number(castLimit.value) || 0;
       currentRows = sourceRows.map((row) => {
-        const entries = (row.filmEntries || []).filter(
+        const selectedEntries = (row.filmEntries || []).filter(
           (entry) => !excludedFilms.has(entry.slug)
             && (!selectedCastLimit || (Number(entry.castPosition) || 1) <= selectedCastLimit),
         );
-        if (!entries.length) return null;
+        if (!selectedEntries.length) return null;
+        const entries = collapseSeriesEntries(selectedEntries);
         const appearances = entries.reduce(
           (total, entry) => total + (Number(entry.views) || 1),
           0,
@@ -2254,19 +2507,17 @@ UI_HTML = r"""<!doctype html>
           rewatches: appearances - entries.length,
           films: filmEntriesText(entries),
           filmEntries: entries,
+          searchText: selectedEntries.map((entry) => entry.title).join(" "),
         };
       }).filter(Boolean);
 
       const includedFilms = filmCatalog.filter(
         (film) => !excludedFilms.has(film.slug),
       );
-      const totalViews = includedFilms.reduce(
-        (total, film) => total + (Number(film.views) || 1),
-        0,
-      );
-      document.querySelector("#totalViews").textContent = formatNumber(totalViews);
-      document.querySelector("#uniqueFilms").textContent = formatNumber(includedFilms.length);
-      document.querySelector("#rewatches").textContent = formatNumber(totalViews - includedFilms.length);
+      const summary = effectiveFilmSummary(includedFilms);
+      document.querySelector("#totalViews").textContent = formatNumber(summary.totalViews);
+      document.querySelector("#uniqueFilms").textContent = formatNumber(summary.uniqueFilms);
+      document.querySelector("#rewatches").textContent = formatNumber(summary.rewatches);
       document.querySelector("#actorCount").textContent = formatNumber(currentRows.length);
       const excludedCount = excludedFilms.size;
       filmFilterCount.textContent = formatNumber(excludedCount);
@@ -2286,7 +2537,7 @@ UI_HTML = r"""<!doctype html>
       const query = search.value.trim().toLocaleLowerCase("tr-TR");
       const filtered = currentRows.filter((row) => {
         if (!query) return true;
-        return `${row.actor} ${row.films}`.toLocaleLowerCase("tr-TR").includes(query);
+        return `${row.actor} ${row.films} ${row.searchText || ""}`.toLocaleLowerCase("tr-TR").includes(query);
       });
       const sorted = [...filtered].sort((left, right) => {
         const primary = Number(left[sortKey] || 0) - Number(right[sortKey] || 0);
@@ -2384,6 +2635,7 @@ UI_HTML = r"""<!doctype html>
             sortKey,
             sortDirection,
             castLimit: Number(castLimit.value) || 0,
+            mergeSeries: mergeSeries.checked,
           }),
         });
         if (!response.ok) {
@@ -2433,6 +2685,14 @@ UI_HTML = r"""<!doctype html>
       excludedFilms = new Set();
       draftExcludedFilms = new Set();
       castLimit.value = "0";
+      mergeSeries.checked = false;
+      const mergeableSeriesCount = new Set(
+        filmCatalog.filter(hasMergeableSeries).map((film) => film.seriesSlug),
+      ).size;
+      mergeSeries.disabled = mergeableSeriesCount === 0;
+      mergeSeriesLabel.title = mergeableSeriesCount
+        ? `${formatNumber(mergeableSeriesCount)} seri bulundu; en az 3 filmi izlenen seriler tek film sayılır`
+        : "En az 3 filmi izlenmiş seri bulunamadı";
       search.value = "";
       currentPage = 1;
       sortKey = "appearances";
@@ -2515,6 +2775,7 @@ UI_HTML = r"""<!doctype html>
       }
     });
     castLimit.addEventListener("change", applySelectedFilms);
+    mergeSeries.addEventListener("change", applySelectedFilms);
     search.addEventListener("input", () => { currentPage = 1; renderRows(); });
     for (const button of sortButtons) {
       button.addEventListener("click", () => {
@@ -3106,7 +3367,7 @@ def run(args: argparse.Namespace) -> int:
         enabled=not args.no_cache,
     )
     try:
-        casts, errors = collect_casts(
+        casts, film_series, errors = collect_casts(
             client,
             all_films,
             cache,
@@ -3128,6 +3389,7 @@ def run(args: argparse.Namespace) -> int:
         )
         for film_slug in all_films
     }
+    series_counts = Counter(series.slug for series in film_series.values())
     total_views = sum(combined_weights.values())
     unique_films = len(combined_weights)
     print_top(rankings, args.display)
@@ -3141,8 +3403,16 @@ def run(args: argparse.Namespace) -> int:
             "uniqueFilms": unique_films,
             "rewatches": total_views - unique_films,
         },
-        "films": film_catalog_payload(all_films, combined_weights, casts),
-        "rows": rankings_payload(rankings, args.top or None, casts),
+        "films": film_catalog_payload(
+            all_films, combined_weights, casts, film_series, series_counts
+        ),
+        "rows": rankings_payload(
+            rankings,
+            args.top or None,
+            casts,
+            film_series,
+            series_counts,
+        ),
         "errors": [
             {
                 "film": spreadsheet_safe(film.title),
