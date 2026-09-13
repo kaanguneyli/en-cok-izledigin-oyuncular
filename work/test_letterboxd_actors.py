@@ -135,6 +135,9 @@ class CastAndRankingTests(unittest.TestCase):
         parser.feed(
             """
             <a href="/actor/not-cast/">Not Cast</a>
+            <p class="credits"><span>Directed by</span>
+              <a href="/director/denis-villeneuve/">Denis Villeneuve</a>
+            </p>
             <h2><a href="/films/in/arrival-collection/by/release-earliest/">
               Related Films
             </a></h2>
@@ -143,11 +146,18 @@ class CastAndRankingTests(unittest.TestCase):
               <a href="/actor/jeremy-renner/">Jeremy Renner</a>
               <a href="/actor/amy-adams/">Amy Adams</a>
             </div></div>
+            <div id="tab-panel-crew">
+              <a href="/director/denis-villeneuve/">Denis Villeneuve</a>
+            </div>
             """
         )
         self.assertEqual([actor.slug for actor in parser.actors], ["amy-adams", "jeremy-renner"])
         self.assertEqual(
             parser.series, MODULE.FilmSeries("arrival-collection", "Arrival")
+        )
+        self.assertEqual(
+            parser.directors,
+            [MODULE.Director("denis-villeneuve", "Denis Villeneuve")],
         )
 
         arrival = MODULE.Film("arrival", "Arrival (2016)")
@@ -169,6 +179,17 @@ class CastAndRankingTests(unittest.TestCase):
         )
         self.assertEqual(rankings[0].appearances, 4)
         self.assertEqual(len(rankings[0].films), 2)
+
+        director_rankings = MODULE.rank_combined_directors(
+            films_collection,
+            diary_collection,
+            {
+                arrival.slug: parser.directors,
+                enchanted.slug: [MODULE.Director("kevin-lima", "Kevin Lima")],
+            },
+        )
+        self.assertEqual(director_rankings[0].director.name, "Denis Villeneuve")
+        self.assertEqual(director_rankings[0].appearances, 3)
 
     def test_workbook_payload_includes_rewatches_and_film_names(self):
         actor = MODULE.Actor("amy-adams", "Amy Adams")
@@ -204,6 +225,23 @@ class CastAndRankingTests(unittest.TestCase):
         row = MODULE.rankings_payload(totals, None, {"arrival": actors})[0]
 
         self.assertEqual(row["filmEntries"][0]["castPosition"], 2)
+
+    def test_director_payload_uses_director_identity_and_no_cast_position(self):
+        director = MODULE.Director("denis-villeneuve", "Denis Villeneuve")
+        total = MODULE.DirectorTotal(
+            director=director,
+            appearances=2,
+            films={"arrival": ("Arrival (2016)", 2)},
+        )
+
+        row = MODULE.director_rankings_payload([total], None)[0]
+
+        self.assertEqual(row["director"], "Denis Villeneuve")
+        self.assertEqual(
+            row["directorUrl"],
+            "https://letterboxd.com/director/denis-villeneuve/",
+        )
+        self.assertNotIn("castPosition", row["filmEntries"][0])
 
     def test_film_catalog_orders_by_views_then_actor_count(self):
         films = {
@@ -322,6 +360,30 @@ class CastAndRankingTests(unittest.TestCase):
         self.assertEqual(
             [row["actor"] for row in unlimited["rows"]], ["Cameo", "Lead"]
         )
+
+    def test_ui_export_supports_directors_without_applying_cast_limit(self):
+        result = {
+            "username": "kaan",
+            "films": [{"slug": "arrival", "views": 2}],
+            "rows": [],
+            "directorRows": [
+                {
+                    "director": "Denis Villeneuve",
+                    "directorUrl": "https://letterboxd.com/director/denis-villeneuve/",
+                    "filmEntries": [
+                        {"slug": "arrival", "title": "Arrival", "views": 2}
+                    ],
+                }
+            ],
+        }
+
+        payload = MODULE.ui_export_payload(
+            result, {"view": "directors", "castLimit": 1}
+        )
+
+        self.assertEqual(payload["entityType"], "director")
+        self.assertEqual(payload["rows"][0]["actor"], "Denis Villeneuve")
+        self.assertEqual(payload["rows"][0]["appearances"], 2)
 
     def test_ui_export_merges_only_series_with_at_least_three_profile_films(self):
         result = {
@@ -454,6 +516,7 @@ class CastCacheTests(unittest.TestCase):
             expected = MODULE.FilmPageData(
                 [MODULE.Actor("amy-adams", "Amy Adams")],
                 MODULE.FilmSeries("arrival-collection", "Arrival"),
+                [MODULE.Director("denis-villeneuve", "Denis Villeneuve")],
             )
             cache.put("arrival", expected)
             cache.save()
@@ -485,11 +548,16 @@ class UICommandTests(unittest.TestCase):
     def test_ui_document_contains_controls_and_escapes_script_content(self):
         document = MODULE.ui_document("</script>").decode("utf-8")
 
-        self.assertIn("<title>En Çok İzlediğin Oyuncular</title>", document)
-        self.assertIn("<h1>En Çok İzlediğin Oyuncular</h1>", document)
+        self.assertIn(
+            "<title>En Çok İzlediğin Oyuncular ve Yönetmenler</title>", document
+        )
+        self.assertIn("<h1>En Çok İzlediğin Oyuncular ve Yönetmenler</h1>", document)
         self.assertIn("Letterboxd hesabı", document)
         self.assertIn('id="castLimit"', document)
         self.assertIn('id="mergeSeries"', document)
+        self.assertIn('data-view="actors">Oyuncular</button>', document)
+        self.assertIn('data-view="directors">Yönetmenler</button>', document)
+        self.assertIn('view: activeView', document)
         self.assertGreater(
             document.index('id="castLimit"'), document.index('id="results"')
         )
@@ -628,7 +696,14 @@ class OutputModeTests(unittest.TestCase):
             "collect_profile_listings",
             return_value={"films": films, "diary": diary},
         ), patch.object(
-            MODULE, "collect_casts", return_value=(casts, {}, [])
+            MODULE,
+            "collect_casts",
+            return_value=(
+                casts,
+                {"arrival": [MODULE.Director("denis-villeneuve", "Denis Villeneuve")]},
+                {},
+                [],
+            ),
         ), patch.object(MODULE, "write_workbook") as write_workbook, redirect_stdout(
             stdout
         ), redirect_stderr(
@@ -648,8 +723,10 @@ class OutputModeTests(unittest.TestCase):
         payload = json.loads(result_line[len(MODULE.UI_RESULT_PREFIX) :])
         self.assertEqual(payload["summary"]["totalViews"], 2)
         self.assertEqual(payload["rows"][0]["actor"], "Amy Adams")
+        self.assertEqual(payload["directorRows"][0]["director"], "Denis Villeneuve")
         self.assertEqual(payload["films"][0]["slug"], "arrival")
         self.assertEqual(payload["films"][0]["actorCount"], 1)
+        self.assertEqual(payload["films"][0]["directorCount"], 1)
 
     def test_cli_mode_still_writes_excel(self):
         return_code, stdout, write_workbook = self.run_with_mode(ui_result=False)
@@ -684,6 +761,38 @@ class OutputModeTests(unittest.TestCase):
 
             with zipfile.ZipFile(output) as archive:
                 self.assertIn("xl/workbook.xml", archive.namelist())
+
+    @unittest.skipUnless(
+        importlib.util.find_spec("xlsxwriter"), "XlsxWriter is not installed"
+    )
+    def test_portable_director_workbook_uses_director_labels(self):
+        payload = {
+            "username": "kaan",
+            "entityType": "director",
+            "summary": {"totalViews": 2, "uniqueFilms": 1, "rewatches": 1},
+            "rows": [
+                {
+                    "rank": 1,
+                    "actor": "Denis Villeneuve",
+                    "appearances": 2,
+                    "uniqueFilms": 1,
+                    "rewatches": 1,
+                    "actorUrl": "https://letterboxd.com/director/denis-villeneuve/",
+                    "films": "Arrival (2016) x2",
+                }
+            ],
+            "errors": [],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "directors.xlsx"
+            MODULE.write_portable_workbook(output, payload)
+
+            with zipfile.ZipFile(output) as archive:
+                workbook_xml = archive.read("xl/workbook.xml").decode("utf-8")
+                strings_xml = archive.read("xl/sharedStrings.xml").decode("utf-8")
+
+        self.assertIn('name="Yönetmenler"', workbook_xml)
+        self.assertIn("Yönetmen", strings_xml)
 
 
 if __name__ == "__main__":

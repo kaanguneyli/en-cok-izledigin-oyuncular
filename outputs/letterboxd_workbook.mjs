@@ -10,6 +10,10 @@ if (!inputPath || !outputPath) {
 
 const payload = JSON.parse(await fs.readFile(inputPath, "utf8"));
 const workbook = Workbook.create();
+const isDirector = payload.entityType === "director";
+const entityLabel = isDirector ? "Yönetmen" : "Oyuncu";
+const entityPlural = isDirector ? "Yönetmenler" : "Oyuncular";
+const entityTitle = isDirector ? "yönetmen" : "oyuncu";
 
 const COLORS = {
   ink: "#172126",
@@ -21,11 +25,11 @@ const COLORS = {
   white: "#FFFFFF",
 };
 
-const sheet = workbook.worksheets.add("Oyuncular");
+const sheet = workbook.worksheets.add(entityPlural);
 sheet.showGridLines = false;
 
 sheet.mergeCells("A1:G1");
-sheet.getRange("A1").values = [[`${payload.username} - oyuncu sıralaması`]];
+sheet.getRange("A1").values = [[`${payload.username} - ${entityTitle} sıralaması`]];
 sheet.getRange("A1:G1").format = {
   fill: COLORS.ink,
   font: { bold: true, color: COLORS.white, size: 16 },
@@ -48,7 +52,7 @@ sheet.getRange("A2:G2").format.rowHeight = 25;
 
 const headers = [[
   "Sıra",
-  "Oyuncu",
+  entityLabel,
   "İzlenme",
   "Benzersiz film",
   "Tekrar",
@@ -92,7 +96,11 @@ if (payload.rows.length) {
   sheet.getRange(`A5:A${lastRow}`).format.numberFormat = "#,##0";
   sheet.getRange(`C5:E${lastRow}`).format.numberFormat = "#,##0";
 
-  const table = sheet.tables.add(`A4:G${lastRow}`, true, "ActorsTable");
+  const table = sheet.tables.add(
+    `A4:G${lastRow}`,
+    true,
+    isDirector ? "DirectorsTable" : "ActorsTable",
+  );
   table.showFilterButton = true;
 } else {
   sheet.mergeCells("A5:G5");
